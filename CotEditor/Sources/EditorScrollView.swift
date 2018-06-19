@@ -88,6 +88,14 @@ final class EditorScrollView: NSScrollView {
     func invalidateLineNumber() {
         
         self.lineNumberView?.needsDisplay = true
+        self.lineNumberView?.needsLayout = true
+    }
+    
+    override func reflectScrolledClipView(_ cView: NSClipView) {
+        
+        super.reflectScrolledClipView(cView)
+        
+        self.lineNumberView?.needsLayout = true
     }
     
     

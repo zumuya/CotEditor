@@ -43,6 +43,7 @@ final class EditorTextView: NSTextView, Themable {
     // MARK: Notification Names
     
     static let didBecomeFirstResponderNotification = Notification.Name("TextViewDidBecomeFirstResponder")
+    static let didChangeSelectionContinuousNotification = Notification.Name("TextViewDidChangeSelectionContinuous")
     
     
     // MARK: Public Properties
@@ -509,7 +510,12 @@ final class EditorTextView: NSTextView, Themable {
     /// selection did change
     override func setSelectedRange(_ charRange: NSRange, affinity: NSSelectionAffinity, stillSelecting stillSelectingFlag: Bool) {
         
+        let oldSelectedRange = self.selectedRanges
         super.setSelectedRange(charRange, affinity: affinity, stillSelecting: stillSelectingFlag)
+        
+        if (self.selectedRanges != oldSelectedRange) {
+            NotificationCenter.default.post(name: EditorTextView.didChangeSelectionContinuousNotification, object: self)
+        }
         
         // highlight matching brace
         if UserDefaults.standard[.highlightBraces], !stillSelectingFlag {
