@@ -415,7 +415,8 @@ final class LineNumberView: NSRulerView {
         
         // prepare subviews
         var remainingOldSubviews = self.subviews
-        var subviews: [NSView] = [borderView]
+        let rulerViewSubviews = remainingOldSubviews.filter { !(($0 is NumberView) || ($0 is WrappedMarkView) || ($0 is TickView) || ($0 == borderView)) }
+        var subviews: [NSView] = rulerViewSubviews + [borderView]
         
         // update actual subviews later
         defer {
@@ -721,6 +722,12 @@ final class LineNumberView: NSRulerView {
         
         layer?.backgroundColor = backgroundColor.cgColor
         borderView.fillColor = textColor(.stroke)
+    }
+    
+    
+    // if draw(_:) is not overriden, system may add some content view even when (wantsUpdateLayer == true)
+    override func draw(_ dirtyRect: NSRect) {
+        
     }
     
     
