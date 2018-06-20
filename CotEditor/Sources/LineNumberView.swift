@@ -108,6 +108,9 @@ final class LineNumberView: NSRulerView {
             
             init(textFont: NSFont, scale: CGFloat) {
 
+                self.textFont = textFont
+                self.scale = scale
+                
                 // setup font
                 let textFontSize = scale * textFont.pointSize
                 self.fontSize = min(round(NumberView.fontSizeFactor * textFontSize), textFontSize)
@@ -133,6 +136,26 @@ final class LineNumberView: NSRulerView {
                 self.font = font
                 self.ctFont = ctFont
             }
+            
+            func isSameSource(textFont: NSFont, scale: CGFloat) -> Bool {
+                
+                return (self.textFont == textFont) && (self.scale == scale)
+            }
+            
+            static public func ==(lhs: DrawingInfo, rhs: DrawingInfo) -> Bool {
+                
+                return lhs.isSameSource(textFont: rhs.textFont, scale: rhs.scale)
+            }
+            
+            
+            // MARK: Source Properties
+            
+            let textFont: NSFont
+            let scale: CGFloat
+            
+            
+            // MARK: Calculated Properties
+            
             let ctFont: CTFont
             let font: NSFont
             let fontSize: CGFloat
@@ -338,6 +361,8 @@ final class LineNumberView: NSRulerView {
     static var CachedWrappedMarkViews: [WrappedMarkView] = []
     static var CachedTickViews: [TickView] = []
     
+    private var lastNumberDrawingInfo: NumberView.DrawingInfo?
+    
     // MARK: -
     // MARK: Lifecycle
     
@@ -424,7 +449,13 @@ final class LineNumberView: NSRulerView {
         
         // setup font
         let textFont = textView.font ?? NSFont.systemFont(ofSize: 0)
-        let numberDrawingInfo = NumberView.DrawingInfo(textFont: textFont, scale: scale)
+        let numberDrawingInfo: NumberView.DrawingInfo
+        if let lastNumberDrawingInfo = self.lastNumberDrawingInfo, lastNumberDrawingInfo.isSameSource(textFont: textFont, scale: scale) {
+            numberDrawingInfo = lastNumberDrawingInfo
+        } else {
+            numberDrawingInfo = NumberView.DrawingInfo(textFont: textFont, scale: scale)
+            self.lastNumberDrawingInfo = numberDrawingInfo
+        }
         
         // prepare frame width
         let lineNumberPadding = round(scale * self.lineNumberPadding)
@@ -854,15 +885,6 @@ private extension CTFont {
         return glyph
     }
     
-}
-
-
-extension NSEdgeInsets: Equatable {
-
-    public static func == (lhs: NSEdgeInsets, rhs: NSEdgeInsets) -> Bool {
-
-        return (lhs.left == rhs.left) && (lhs.top == rhs.top) && (lhs.right == rhs.right) && (lhs.bottom == rhs.bottom)
-    }
 }
 
 
