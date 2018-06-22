@@ -87,8 +87,7 @@ final class EditorScrollView: NSScrollView {
     
     func invalidateLineNumber() {
         
-        self.lineNumberView?.needsDisplay = true
-        self.lineNumberView?.needsLayout = true
+        self.lineNumberView?.invalidateLineNumber()
     }
     
     override func reflectScrolledClipView(_ cView: NSClipView) {
@@ -114,14 +113,14 @@ final class EditorScrollView: NSScrollView {
     
     
     /// return current line number view
-    private var lineNumberView: NSRulerView? {
+    private var lineNumberView: LineNumberView? {
     
         switch self.layoutOrientation {
         case .horizontal:
-            return self.verticalRulerView
+            return self.verticalRulerView as? LineNumberView
             
         case .vertical:
-            return self.horizontalRulerView
+            return self.horizontalRulerView as? LineNumberView
         }
     }
     

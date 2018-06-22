@@ -351,7 +351,6 @@ final class LineNumberView: NSRulerView {
     // MARK: Private Properties
     
     private var requiredNumberOfDigits = 0
-    private var needsRecountNumberOfDigits = true
     
     private weak var draggingTimer: Timer?
     
@@ -362,7 +361,8 @@ final class LineNumberView: NSRulerView {
     static var CachedTickViews: [TickView] = []
     
     private var lastNumberDrawingInfo: NumberView.DrawingInfo?
-    
+    private var lineSeparatedString: LineSeparatedString?
+
     // MARK: -
     // MARK: Lifecycle
     
@@ -443,10 +443,25 @@ final class LineNumberView: NSRulerView {
             let textContainer = textView.textContainer
             else { return }
         
-        let text = textView.string
+        let lineSeparatedString: LineSeparatedString
+        if let cachedLineSeparatedString = self.lineSeparatedString {
+            lineSeparatedString = cachedLineSeparatedString
+        } else {
+            lineSeparatedString = LineSeparatedString(textView.string)
+            self.lineSeparatedString = lineSeparatedString
+        }
+        
+        let text = lineSeparatedString.string//textView.string
+        let text_utf16 = text.utf16
         let textLength = (text as NSString).length
         let isVerticalText = self.orientation == .horizontalRuler
         let scale = textView.scale
+        
+        // this seems slow on large document
+        //
+        //if !lineSeparatedString.isSameSource(text) {
+        //    lineSeparatedString = LineSeparatedString(text)
+        //}
         
         // setup font
         let textFont = textView.font ?? NSFont.systemFont(ofSize: 0)
@@ -467,12 +482,8 @@ final class LineNumberView: NSRulerView {
         if isVerticalText {
             ruleThickness = max(numberDrawingInfo.fontSize + 2.5 * tickLength, self.minHorizontalThickness)
         } else {
-            if self.needsRecountNumberOfDigits {
-                // -> count only if really needed since the line counting is high workload, especially by large document
-                let numberOfLines = text.numberOfLines(in: text.range, includingLastLineEnding: true)
-                self.requiredNumberOfDigits = max(numberOfLines.numberOfDigits, self.minNumberOfDigits)
-                self.needsRecountNumberOfDigits = false
-            }
+            let numberOfLines = lineSeparatedString.numberOfLines
+            self.requiredNumberOfDigits = max(numberOfLines.numberOfDigits, self.minNumberOfDigits)
             
             // use the line number of whole string, namely the possible largest line number
             // -> The view width depends on the number of digits of the total line numbers.
@@ -495,14 +506,38 @@ final class LineNumberView: NSRulerView {
         }()
         
         // get multiple selections
-        let selectedLineRanges: [NSRange] = textView.selectedRanges.map { (text as NSString).lineRange(for: $0.rangeValue) }
+        let selectedCharacterRanges_ns = textView.selectedRanges.map { $0.rangeValue }
+        let selectedCharacterRanges = selectedCharacterRanges_ns.compactMap { Range($0, in: text) }
+        let selectedLines = selectedCharacterRanges.flatMap { (characterRange) -> [Int] in
+            
+            guard let min = lineSeparatedString.line(at: characterRange.lowerBound) else {
+                guard (characterRange.lowerBound == text.endIndex), (lineSeparatedString.numberOfLines > 0) else {
+                    return []
+                }
+                return [lineSeparatedString.numberOfLines - 1]
+            }
+            if (text.startIndex < characterRange.upperBound),
+                (characterRange.lowerBound < characterRange.upperBound),
+                let max = lineSeparatedString.line(at: text.index(before: characterRange.upperBound))
+            {
+                return [Int](min..<(max + 1))
+            } else if let max = lineSeparatedString.line(at: characterRange.upperBound) {
+                return [Int](min..<(max + 1))
+            } else {
+                return [min]
+            }
+        }
+        let selectedLineCharacterRanges = selectedLines.compactMap { lineSeparatedString.characterRangeForLine($0) }
+        let selectedLineCharacterRanges_ns: [NSRange] = selectedLineCharacterRanges.compactMap { NSRange($0, in: text) } //textView.selectedRanges.map { (text as NSString).lineRange(for: $0.rangeValue) }
         
         
         /// put line number blocks later
         var putNumberOperations: [()->Void] = []
         defer { putNumberOperations.forEach { $0() } }
         
-        func putNumber(_ lineNumber: Int, y: CGFloat, isSelected: Bool) {
+        func putNumber(_ line: Int, y: CGFloat, isSelected: Bool) {
+            
+            let lineNumber = self.lineNumber(forLine: line)
             
             // to avoid unnecessary redraws, dequeue existing views with high priority
             var visibleView: NumberView?
@@ -629,25 +664,31 @@ final class LineNumberView: NSRulerView {
         
         // count up lines until visible
         let firstVisibleIndex = layoutManager.characterIndexForGlyph(at: glyphRangeToDraw.location)
-        var lineNumber = text.lineNumber(at: firstVisibleIndex)
+        var line = 0
+        if (firstVisibleIndex < text_utf16.count) {
+            line = lineSeparatedString.line(at: text_utf16.index(text_utf16.startIndex, offsetBy: firstVisibleIndex).samePosition(in: text)!) ?? 0
+        }
         
         // draw visible line numbers
         var glyphIndex = glyphRangeToDraw.location
-        var lastLineNumber = 0
+        var lastLine = -1
         
         while glyphIndex < glyphRangeToDraw.upperBound {  // count "real" lines
             defer {
-                lineNumber += 1
+                line += 1
             }
             let charIndex = layoutManager.characterIndexForGlyph(at: glyphIndex)
-            let lineRange = text.lineRange(at: charIndex)
-            let lineGlyphRange = layoutManager.glyphRange(forCharacterRange: lineRange, actualCharacterRange: nil)
+            guard (charIndex < text_utf16.count), let characterIndex = text_utf16.index(text_utf16.startIndex, offsetBy: charIndex).samePosition(in: text), let lineRange = lineSeparatedString.lineRange(at: characterIndex) else {
+                break
+            }
+            let lineRange_ns = NSRange(lineRange, in: text)
+            let lineGlyphRange = layoutManager.glyphRange(forCharacterRange: lineRange_ns, actualCharacterRange: nil)
             glyphIndex = lineGlyphRange.upperBound
             
             // check if line is selected
-            let isSelected = selectedLineRanges.contains { selectedRange in
-                (selectedRange.contains(lineRange.location) &&
-                    (!isVerticalText || (lineRange.location == selectedRange.location || lineRange.upperBound == selectedRange.upperBound)))
+            let isSelected = selectedLineCharacterRanges_ns.contains { selectedRange in
+                (selectedRange.contains(lineRange_ns.location) &&
+                    (!isVerticalText || (lineRange_ns.location == selectedRange.location || lineRange_ns.upperBound == selectedRange.upperBound)))
             }
             
             var wrappedLineGlyphIndex = lineGlyphRange.location
@@ -655,23 +696,23 @@ final class LineNumberView: NSRulerView {
                 var range = NSRange.notFound
                 let lineRect = layoutManager.lineFragmentRect(forGlyphAt: wrappedLineGlyphIndex, effectiveRange: &range, withoutAdditionalLayout: true)
                 let y = scale * lineRect.minY
-                let isWrappedLine = (lastLineNumber == lineNumber)
-                lastLineNumber = lineNumber
+                let isWrappedLine = (lastLine == line)
+                lastLine = line
                 wrappedLineGlyphIndex = range.upperBound
                 
                 if isWrappedLine {
                     guard !isVerticalText else { continue }
                     
-                    putWrappedMark(y: y, digitCount: lineNumber.numberOfDigits)
+                    putWrappedMark(y: y, digitCount: lineNumber(forLine: line).numberOfDigits)
                     
                 } else {  // new line
                     if isVerticalText {
                         putTick(y: y)
                     }
-                    if !isVerticalText || lineNumber % 5 == 0 || lineNumber == 1 || isSelected ||
-                        (lineRange.upperBound == textLength && layoutManager.extraLineFragmentTextContainer == nil)  // last line for vertical text
+                    if self.showsLine(line, isVerticalText: isVerticalText, isSelected: isSelected) ||
+                        (lineRange_ns.upperBound == textLength && layoutManager.extraLineFragmentTextContainer == nil)  // last line for vertical text
                     {
-                        putNumber(lineNumber, y: y, isSelected: isSelected)
+                        putNumber(line, y: y, isSelected: isSelected)
                     }
                 }
             }
@@ -680,10 +721,11 @@ final class LineNumberView: NSRulerView {
         // draw the last "extra" line number
         let lineRect = layoutManager.extraLineFragmentUsedRect
         if !lineRect.isEmpty, lineRect.intersects(textViewVisibleRect) {
-            let lineNumber = text.lineNumber(at: textLength)
-            if (lineNumber != lastLineNumber) {
+            if let line = lineSeparatedString.line(at: text_utf16.index(text_utf16.startIndex, offsetBy: textLength).samePosition(in: text)!),
+                (line != lastLine)
+            {
                 let isSelected: Bool = {
-                    guard let lastSelectedRange = selectedLineRanges.last else { return false }
+                    guard let lastSelectedRange = selectedLineCharacterRanges_ns.last else { return false }
                     
                     return (lastSelectedRange.length == 0) && (textLength == lastSelectedRange.upperBound)
                 }()
@@ -692,13 +734,27 @@ final class LineNumberView: NSRulerView {
                 if isVerticalText {
                     putTick(y: y)
                 }
-                putNumber(lineNumber, y: y, isSelected: isSelected)
+                putNumber(line, y: y, isSelected: isSelected)
             }
         }
     }
     
     
-    //MARK: Drawing
+    // MARK: Line Parameters
+    
+    func showsLine(_ line: Int, isVerticalText: Bool, isSelected: Bool) -> Bool {
+        
+        let lineNumber = self.lineNumber(forLine: line)
+        return (!isVerticalText || (lineNumber % 5 == 0) || (lineNumber == 1) || isSelected)
+    }
+    
+    func lineNumber(forLine line: Int) -> Int {
+        
+        return line + 1
+    }
+    
+    
+    // MARK: Drawing
     
     override var wantsUpdateLayer: Bool {
         
@@ -740,6 +796,15 @@ final class LineNumberView: NSRulerView {
         return max(self.minVerticalThickness, self.ruleThickness)
     }
     
+    
+    // MARK: Public Methods
+    
+    public func invalidateLineNumber() {
+        
+        self.needsDisplay = true
+        self.needsLayout = true
+        self.lineSeparatedString = nil
+    }
     
     
     // MARK: Private Methods
@@ -785,7 +850,7 @@ final class LineNumberView: NSRulerView {
     /// update total number of lines determining view thickness on holizontal text layout
     @objc private func textDidChange(_ notification: Notification) {
         
-        self.needsRecountNumberOfDigits = true
+        self.lineSeparatedString = nil
     }
     
     
@@ -1023,6 +1088,180 @@ extension LineNumberView {
         }
         
         textView.setSelectedRange(range, affinity: affinity, stillSelecting: false)
+    }
+    
+}
+
+public class LineSeparatedString {
+    
+    public init(_ string: String) {
+        
+        self.string = string.immutable
+    }
+
+    
+    // MARK: Public Properties
+    
+    public let string: String
+    
+    
+    public lazy var includesLastLineEnding: Bool = {
+        if (_includesLastLineEnding == nil) {
+            self.processAndStoreValues()
+        }
+        return _includesLastLineEnding!
+    }()
+    
+    
+    public lazy var numberOfLines = self.lineBreakLocations.count
+    
+    
+    // MARK: Process
+    
+    public lazy var lineBreakLocations: [String.Index] = {
+        if (_lineBreakLocations == nil) {
+            self.processAndStoreValues()
+        }
+        return _lineBreakLocations!
+    }()
+    private var _includesLastLineEnding: Bool?
+    private var _lineBreakLocations: [String.Index]?
+    
+    
+    private func processAndStoreValues() {
+        
+        let string = self.string
+        guard !string.isEmpty, case let characterRange = string.startIndex..<string.endIndex else {
+            self._lineBreakLocations = [string.startIndex]
+            self._includesLastLineEnding = false
+            return
+        }
+        
+        var lineBreakLocations: [String.Index] = []
+        
+        string.enumerateSubstrings(in: characterRange, options: [.byLines, .substringNotRequired]) { (_, _, enclosingRange, _) in
+            lineBreakLocations.append(string.index(before: enclosingRange.upperBound))
+        }
+        
+        if let last = string.unicodeScalars.last, CharacterSet.newlines.contains(last) {
+            lineBreakLocations.append(string.unicodeScalars.endIndex)
+            self._includesLastLineEnding = true
+        } else {
+            self._includesLastLineEnding = false
+        }
+        self._lineBreakLocations = lineBreakLocations
+    }
+    
+    
+    // MARK: Public Methods
+
+    public func isSameSource(_ string: String) -> Bool {
+        
+        return (self.string.hashValue == string.hashValue)
+    }
+
+    
+    public func characterRangeForLine(_ line: Int) -> Range<String.Index>? {
+        
+        let string = self.string
+        let lineBreakLocations = self.lineBreakLocations
+        if string.isEmpty, (line == 0) {
+            return string.startIndex..<string.endIndex
+        }
+        guard line < lineBreakLocations.count else {
+            return nil
+        }
+        
+        var lower: String.Index
+        var upper: String.Index
+        
+        if (line > 0) {
+            lower = string.index(after: lineBreakLocations[line - 1])
+        } else {
+            lower = string.startIndex
+        }
+        upper = (lineBreakLocations[line] < string.endIndex) ? string.index(after: lineBreakLocations[line]) : lineBreakLocations[line]
+        
+        return lower..<upper
+    }
+    
+    
+    public func lineRange(at location: String.Index) -> Range<String.Index>? {
+        
+        let string = self.string
+        let lineBreakLocations = self.lineBreakLocations
+        guard !string.isEmpty else {
+            return nil
+        }
+        
+        var lower: String.Index
+        var upper: String.Index
+        
+        let currentLineEndIndex = lineBreakLocations.indexWithBinarySearch(for: location)
+        guard (currentLineEndIndex < lineBreakLocations.count) else {
+            return nil
+        }
+        if (currentLineEndIndex > 0) {
+            lower = string.index(after: lineBreakLocations[currentLineEndIndex - 1])
+        } else {
+            lower = string.startIndex
+        }
+        upper = string.index(after: lineBreakLocations[currentLineEndIndex])
+        
+        return lower..<upper
+    }
+    
+
+    public func line(at characterIndex: String.Index) -> Int? {
+        
+        let lineBreakLocations = self.lineBreakLocations
+        let a = lineBreakLocations.indexWithBinarySearch(for: characterIndex)
+        guard (a < lineBreakLocations.count) else {
+            return nil
+        }
+        return a
+    }
+    
+}
+
+enum BinarySearchDirection {
+    
+    case lowerBound
+    case upperBound
+}
+extension Array {
+    
+    func indexWithBinarySearch(direction: BinarySearchDirection = .lowerBound, handler: (_ other: Element)->Bool) -> Int {
+        
+        var okIndex: Int
+        var ngIndex: Int
+        
+        switch direction {
+        case .lowerBound:
+            okIndex = self.count
+            ngIndex = -1
+        case .upperBound:
+            okIndex = 0
+            ngIndex = self.count
+        }
+        
+        while (abs(okIndex - ngIndex) > 1) {
+            let midIndex = ((okIndex + ngIndex) / 2)
+            if handler(self[midIndex]) {
+                okIndex = midIndex
+            } else {
+                ngIndex = midIndex
+            }
+        }
+        return okIndex
+    }
+}
+
+extension Array where Element: Comparable {
+    
+    func indexWithBinarySearch(for target: Element) -> Int {
+        
+        return self.indexWithBinarySearch(direction: .lowerBound) { (target <= $0) }
     }
     
 }
